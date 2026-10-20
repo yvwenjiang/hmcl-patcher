@@ -2,3 +2,8 @@ build/
 .gradle/
 *.class
 scripts/*.log
+
+.idea/
+*.iml
+out/
+*.log
