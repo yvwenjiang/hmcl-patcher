@@ -190,25 +190,4 @@ HMCL 会把自己识别为“非官方构建”：
 本工具以 GPL-3.0 发布（见 [LICENSE](LICENSE)），与 HMCL 保持一致。它只修改你本机上的 HMCL 副本，
 供个人使用；分发修改后的 HMCL 时请遵守 HMCL 的 GPLv3 许可并保留其源代码。
 
-## 9. 发布到 GitHub
-
-仓库与 CI 配置都已就绪（`.github/workflows/build.yml` 会在 push 时构建并上传产物，
-推送 `v*` 标签时自动创建 Release）。
-
-令牌只交给 GitHub CLI 的凭据存储，**不要**写进脚本、命令行参数或聊天记录：
-
-```bash
-gh auth login              # 首次登录（浏览器或粘贴令牌）
-./scripts/publish.sh       # 自动创建仓库 → 推送 → 构建 → 发布 Release
-```
-
-手动发布等价于：
-
-```bash
-git remote add origin https://github.com/<你的用户名>/hmcl-patcher.git
-git push -u origin main
-gh release create v1.1.0 build/libs/hmcl-patcher.jar --title v1.1.0
-```
-
-> ⚠️ 一旦 Personal Access Token 出现在聊天、截图、脚本或命令行历史中，请立即到
 > GitHub → Settings → Developer settings → Personal access tokens 吊销并重新生成。
