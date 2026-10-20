@@ -50,7 +50,54 @@ public final class InstallationScanner {
         for (Root root : defaultRoots()) {
             collect(root.path(), root.depth(), result, seen);
         }
+        if (SystemProbe.isWindows()) {
+            // Follow the traces a portable .exe leaves behind: shortcuts and (rare) registry entries.
+            for (Path shortcut : WindowsLocator.shortcutTargets()) {
+                addCandidate(shortcut, result, seen);
+            }
+            for (Path entry : WindowsLocator.registryEntries()) {
+                if (Files.isDirectory(entry)) {
+                    collect(entry, 3, result, seen);
+                } else {
+                    addCandidate(entry, result, seen);
+                }
+            }
+        }
         return result;
+    }
+
+    /// Scans much more aggressively: every fixed drive on Windows, the whole home directory on Linux.
+    ///
+    /// This can take a while and is therefore only triggered on request.
+    public static List<Found> deepScan() {
+        List<Found> result = new ArrayList<>(scan());
+        Set<Path> seen = new LinkedHashSet<>();
+        for (Found found : result) {
+            seen.add(found.path());
+        }
+
+        if (SystemProbe.isWindows()) {
+            for (Path drive : WindowsLocator.fixedDrives()) {
+                collect(drive, 5, result, seen);
+            }
+        } else {
+            String home = System.getProperty("user.home", "");
+            collect(Path.of(home), 6, result, seen);
+            collect(Path.of("/opt"), 5, result, seen);
+            collect(Path.of("/usr/local"), 5, result, seen);
+        }
+        return result;
+    }
+
+    /// Adds a single file if it is an HMCL distribution.
+    public static void addCandidate(Path file, List<Found> result, Set<Path> seen) {
+        if (!Files.isRegularFile(file)) {
+            return;
+        }
+        Found found = inspect(file);
+        if (found != null && seen.add(found.path())) {
+            result.add(found);
+        }
     }
 
     /// Scans the given directory recursively.

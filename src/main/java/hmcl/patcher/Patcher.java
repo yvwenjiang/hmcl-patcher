@@ -24,6 +24,8 @@ public final class Patcher {
     public enum Outcome {
         /// The installation was patched in this run.
         PATCHED,
+        /// The original file could not be written, so a patched copy was created instead.
+        PATCHED_COPY,
         /// The installation already contains the patch.
         ALREADY_PATCHED,
         /// The installation does not contain the region based download restriction.
@@ -48,10 +50,37 @@ public final class Patcher {
         return installation.resolveSibling(installation.getFileName() + BACKUP_SUFFIX);
     }
 
+    /// Patches the given file, retrying briefly while Windows still holds it open and falling back
+    /// to a patched copy when the original location is not writable.
+    public static Result repair(Path installation, String version, boolean dryRun)
+            throws IOException, PatchException {
+        IOException lastError = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                return patch(installation, version, dryRun);
+            } catch (java.nio.file.AccessDeniedException e) {
+                if (dryRun) {
+                    throw e;
+                }
+                return patchCopy(installation, version);
+            } catch (java.nio.file.FileSystemException e) {
+                // Most likely the file is still in use; give the user a moment to close HMCL.
+                lastError = e;
+                sleep(700L * attempt);
+            }
+        }
+        throw lastError;
+    }
+
     /// Patches the given HMCL distribution file.
     ///
     /// @param dryRun when `true` the file is only analysed and never written
     public static Result patch(Path installation, String version, boolean dryRun)
+            throws IOException, PatchException {
+        return patch(installation, version, dryRun, true);
+    }
+
+    private static Result patch(Path installation, String version, boolean dryRun, boolean createBackup)
             throws IOException, PatchException {
         HmclArchive archive = HmclArchive.read(installation);
         byte[] jar = archive.jar();
@@ -80,7 +109,9 @@ public final class Patcher {
             return new Result(installation, version, Outcome.WOULD_PATCH);
         }
 
-        backup(installation);
+        if (createBackup) {
+            backup(installation);
+        }
         archive.write(patchedJar);
         verifyFile(installation);
 
@@ -96,6 +127,40 @@ public final class Patcher {
         Files.copy(backup, installation, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
         Files.delete(backup);
         return new Result(installation, version, Outcome.RESTORED);
+    }
+
+    /// Creates a patched copy next to the original file (or in the home directory) when the
+    /// original cannot be written, for example because HMCL lives in a read-only directory.
+    private static Result patchCopy(Path installation, String version) throws IOException, PatchException {
+        Path copy = patchedCopyPath(installation);
+        Files.copy(installation, copy, StandardCopyOption.REPLACE_EXISTING);
+        patch(copy, version, false, false);
+        return new Result(copy, version, Outcome.PATCHED_COPY);
+    }
+
+    private static Path patchedCopyPath(Path installation) {
+        String name = installation.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        String base = dot > 0 ? name.substring(0, dot) : name;
+        String extension = dot > 0 ? name.substring(dot) : "";
+        String copyName = base + "-patched" + extension;
+        try {
+            Path directory = installation.toAbsolutePath().getParent();
+            if (directory != null && Files.isWritable(directory)) {
+                return directory.resolve(copyName);
+            }
+        } catch (RuntimeException ignored) {
+            // Fall through to the home directory.
+        }
+        return Path.of(System.getProperty("user.home", "."), copyName);
+    }
+
+    private static void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static void backup(Path installation) throws IOException {

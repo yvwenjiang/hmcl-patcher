@@ -1,24 +1,33 @@
 package hmcl.patcher;
 
 import java.io.IOException;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
+import java.nio.file.FileSystemException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /// Command line entry point of hmcl-patcher.
 public final class Main {
 
     private static final String NAME = "hmcl-patcher";
-    private static final String VERSION = "1.0.0";
+    private static final String VERSION = "1.1.0";
+
+    /// Return value of [#run(String[])] when a Swing window was opened and the JVM must stay alive.
+    private static final int GUI_MODE = -1;
 
     private Main() {
     }
 
     public static void main(String[] args) {
-        System.exit(run(args));
+        int code = run(args);
+        if (code != GUI_MODE) {
+            System.exit(code);
+        }
     }
 
     private static int run(String[] args) {
@@ -27,6 +36,8 @@ public final class Main {
         boolean dryRun = false;
         boolean restore = false;
         boolean verify = false;
+        boolean deep = false;
+        boolean gui = false;
         List<String> arguments = new ArrayList<>();
 
         for (String argument : args) {
@@ -44,6 +55,8 @@ public final class Main {
                 case "-n", "--dry-run" -> dryRun = true;
                 case "--restore" -> restore = true;
                 case "--verify" -> verify = true;
+                case "--deep" -> deep = true;
+                case "--gui" -> gui = true;
                 case "--all" -> {
                     // Patching everything that was found is the default behaviour.
                 }
@@ -60,30 +73,45 @@ public final class Main {
 
         System.out.println(NAME + " " + VERSION);
         System.out.println();
+        Disclaimer.print();
 
-        List<InstallationScanner.Found> targets;
+        if (gui) {
+            if (!Gui.isAvailable()) {
+                error("当前环境没有图形界面，无法打开窗口模式。");
+                return 1;
+            }
+            Gui.open(null);
+            return GUI_MODE;
+        }
+
         boolean explicit = !arguments.isEmpty();
+
+        // Started by double clicking the jar: no console and no arguments, so prefer the window,
+        // where the user can also drag in an HMCL that the automatic scan did not find.
+        if (!explicit && !assumeYes && !list && !verify && !restore && !dryRun
+                && System.console() == null && Gui.isAvailable()) {
+            info("已打开窗口模式：自动扫描本机 HMCL，也可以把程序文件拖进窗口。");
+            Gui.open(null);
+            return GUI_MODE;
+        }
+        List<InstallationScanner.Found> targets;
         try {
-            targets = explicit ? resolve(arguments) : InstallationScanner.scan();
+            if (explicit) {
+                targets = resolve(arguments);
+            } else {
+                info("正在扫描已安装的 HMCL" + (deep ? "（深度扫描，可能需要几分钟）" : "") + " ...");
+                targets = deep ? InstallationScanner.deepScan() : InstallationScanner.scan();
+            }
         } catch (IOException e) {
             error("读取目标失败: " + e.getMessage());
             return 1;
         }
 
         if (targets.isEmpty()) {
-            info("没有找到 HMCL。");
-            info("可以显式指定文件，例如:");
-            info("  " + NAME + " ~/Downloads/HMCL-3.17.0.362.jar");
-            info("  " + NAME + " 'C:\\Users\\me\\Desktop\\HMCL-3.17.0.362.exe'");
-            return 1;
+            return noInstallationFound();
         }
 
-        if (list) {
-            printTable(targets);
-            return 0;
-        }
-
-        if (verify) {
+        if (list || verify) {
             printTable(targets);
             return 0;
         }
@@ -95,6 +123,20 @@ public final class Main {
         return patchAll(targets, assumeYes, dryRun, explicit);
     }
 
+    private static int noInstallationFound() {
+        if (Gui.isAvailable()) {
+            info("没有自动找到 HMCL，已为你打开窗口：把 HMCL 的 exe/jar/sh 拖进窗口即可修复。");
+            Gui.open(null);
+            return GUI_MODE;
+        }
+        info("没有找到 HMCL。");
+        info("请把 HMCL 的 exe/jar/sh 文件拖入窗口，或显式指定路径：");
+        info("  " + NAME + " ~/Downloads/HMCL-3.17.0.362.jar");
+        info("  " + NAME + " 'C:\\Users\\me\\Desktop\\HMCL-3.17.0.362.exe'");
+        info("  " + NAME + " --deep           # 深度扫描整机");
+        return 1;
+    }
+
     private static List<InstallationScanner.Found> resolve(List<String> arguments) throws IOException {
         List<InstallationScanner.Found> result = new ArrayList<>();
         Set<Path> seen = new LinkedHashSet<>();
@@ -104,21 +146,22 @@ public final class Main {
                 error("路径不存在: " + path);
                 continue;
             }
-            if (path.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".deb")) {
+            if (path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".deb")) {
                 warn("不支持直接修补 .deb 安装包，请先安装，然后修补 /usr/share/java/hmcl/ 下的 HMCL-*.sh：");
                 info("  sudo " + NAME + " /usr/share/java/hmcl/");
                 continue;
             }
             List<InstallationScanner.Found> found = Files.isDirectory(path)
                     ? InstallationScanner.scan(path, 8)
-                    : List.of(InstallationScanner.inspect(path));
+                    : new ArrayList<>(List.of(InstallationScanner.inspect(path)));
+            if (found.size() == 1 && found.get(0) == null) {
+                warn("不是 HMCL 发行包，已忽略: " + path);
+                continue;
+            }
             for (InstallationScanner.Found installation : found) {
                 if (installation != null && seen.add(installation.path())) {
                     result.add(installation);
                 }
-            }
-            if (found.isEmpty()) {
-                warn("不是 HMCL 发行包，已忽略: " + path);
             }
         }
         return result;
@@ -142,14 +185,19 @@ public final class Main {
             return 0;
         }
 
+        if (SystemProbe.isHmclRunning()) {
+            warn("检测到 HMCL 可能正在运行，请先退出 HMCL；Windows 下文件被占用会导致写入失败。");
+        }
+
         int failed = 0;
         for (InstallationScanner.Found installation : pending) {
             try {
                 info("正在处理 " + installation.path() + " ...");
-                Patcher.Result result = Patcher.patch(installation.path(), installation.version(), dryRun);
+                Patcher.Result result = Patcher.repair(installation.path(), installation.version(), dryRun);
                 switch (result.outcome()) {
                     case PATCHED -> success("已写入补丁，原文件备份为 "
-                            + Patcher.backupOf(installation.path()).getFileName());
+                            + Patcher.backupOf(result.path()).getFileName());
+                    case PATCHED_COPY -> warn("原文件无法写入，已生成修复副本: " + result.path());
                     case WOULD_PATCH -> success("检查通过，--dry-run 模式未写入。");
                     case ALREADY_PATCHED -> info("已打过补丁，跳过。");
                     case NO_RESTRICTION -> info("该版本没有下载限制，跳过。");
@@ -158,9 +206,9 @@ public final class Main {
             } catch (IOException e) {
                 failed++;
                 error("处理失败: " + e.getMessage());
-                if (e instanceof java.nio.file.AccessDeniedException) {
+                if (e instanceof AccessDeniedException) {
                     info("没有写入权限：Linux 上可尝试 sudo，或先把 HMCL 复制到用户目录再运行。");
-                } else if (e instanceof java.nio.file.FileSystemException) {
+                } else if (e instanceof FileSystemException) {
                     info("文件可能正被占用，请先退出正在运行的 HMCL 再重试。");
                 }
             } catch (PatchException e) {
@@ -183,7 +231,7 @@ public final class Main {
 
     private static int restoreAll(List<InstallationScanner.Found> targets, boolean assumeYes) {
         List<InstallationScanner.Found> restorable = targets.stream()
-                .filter(installation -> installation.backupExists())
+                .filter(InstallationScanner.Found::backupExists)
                 .toList();
 
         if (restorable.isEmpty()) {
@@ -220,7 +268,7 @@ public final class Main {
         System.out.println();
     }
 
-    private static String describe(ClassFilePatcher.State state) {
+    static String describe(ClassFilePatcher.State state) {
         return switch (state) {
             case PATCHED -> "已打补丁";
             case ORIGINAL -> "待打补丁";
@@ -240,8 +288,8 @@ public final class Main {
         System.out.print(message + " [Y/n] ");
         String answer = System.console().readLine();
         return answer == null || answer.isBlank()
-                || answer.trim().equalsIgnoreCase("y")
-                || answer.trim().equalsIgnoreCase("yes");
+                || answer.equalsIgnoreCase("y")
+                || answer.equalsIgnoreCase("yes");
     }
 
     private static void printHelp() {
@@ -251,7 +299,8 @@ public final class Main {
                 用法:
                   %s [选项] [文件或目录 ...]
 
-                不带文件参数时会自动扫描本机常见的 HMCL 安装位置并修补。
+                不带文件参数时会自动扫描本机常见的 HMCL 安装位置并修补；
+                找不到时会自动打开窗口，把 HMCL 的 exe/jar/sh 拖进去即可修复。
                 支持 HMCL-x.y.z.jar、HMCL-x.y.z.exe（Windows）和 HMCL-x.y.z.sh（Linux）。
 
                 选项:
@@ -260,14 +309,17 @@ public final class Main {
                       --restore     从备份（*%s）还原
                   -n, --dry-run     只检查，不写入文件
                   -y, --yes         不询问，直接执行
+                      --deep        深度扫描整机（Windows 扫描所有固定磁盘）
+                      --gui         强制打开图形窗口（支持拖放文件）
                   -h, --help        显示本帮助
                   -v, --version     显示版本
 
                 示例:
                   %s                                 自动扫描并修补
                   %s ~/Downloads/HMCL-3.17.0.362.jar 修补指定文件
+                  %s --gui                           打开窗口，拖入文件修复
                   %s --restore                       还原所有备份
-                """.formatted(NAME, VERSION, NAME, Patcher.BACKUP_SUFFIX, NAME, NAME, NAME));
+                """.formatted(NAME, VERSION, NAME, Patcher.BACKUP_SUFFIX, NAME, NAME, NAME, NAME));
     }
 
     private static void info(String message) {
