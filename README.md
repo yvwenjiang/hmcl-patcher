@@ -189,5 +189,3 @@ HMCL 会把自己识别为“非官方构建”：
 
 本工具以 GPL-3.0 发布（见 [LICENSE](LICENSE)），与 HMCL 保持一致。它只修改你本机上的 HMCL 副本，
 供个人使用；分发修改后的 HMCL 时请遵守 HMCL 的 GPLv3 许可并保留其源代码。
-
-> GitHub → Settings → Developer settings → Personal access tokens 吊销并重新生成。
